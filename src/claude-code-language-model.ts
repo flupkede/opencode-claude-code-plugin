@@ -53,6 +53,37 @@ import { homedir, tmpdir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { dirname, join } from "node:path"
 
+/**
+ * True if the prompt has any user-side content after the last assistant
+ * message (text, tool_result, or any user role entry). False when the
+ * prompt ends with an assistant message and there is nothing for Claude
+ * to respond to — opencode sometimes iterates the agent loop one more
+ * time after a turn naturally completed; without short-circuiting we'd
+ * spawn Claude CLI on an empty turn and the model would reply with a
+ * stub like "Did you mean to send a message?".
+ */
+function hasNewUserContent(
+  prompt: LanguageModelV3CallOptions["prompt"],
+): boolean {
+  for (let i = prompt.length - 1; i >= 0; i--) {
+    const msg = prompt[i]
+    if (msg.role === "assistant") return false
+    if (msg.role !== "user") continue
+    const content: any = msg.content
+    if (typeof content === "string") {
+      if (content.trim()) return true
+      continue
+    }
+    if (Array.isArray(content)) {
+      for (const part of content as any[]) {
+        if (part.type === "text" && part.text && part.text.trim()) return true
+        if (part.type === "tool-result") return true
+      }
+    }
+  }
+  return false
+}
+
 function readPromptFileIfPresent(path: string): string | undefined {
   try {
     const content = readFileSync(path, "utf8").trim()
@@ -604,6 +635,29 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       }
     }
 
+    // Short-circuit when opencode iterates the agent loop one more time
+    // after a turn already finished. The prompt ends with an assistant
+    // message and has no fresh user input — spawning Claude here would
+    // just produce a stub like "No input received. Standing by".
+    if (!hasNewUserContent(options.prompt)) {
+      log.info("doGenerate short-circuit: no new user content")
+      return {
+        content: [],
+        finishReason: this.toFinishReason("stop"),
+        usage: this.toUsage({ input_tokens: 0, output_tokens: 0 }),
+        request: { body: { text: "" } },
+        response: {
+          id: generateId(),
+          timestamp: new Date(),
+          modelId: this.modelId,
+        },
+        providerMetadata: {
+          "claude-code": { synthetic: true, path: "no-new-user-content" },
+        },
+        warnings,
+      }
+    }
+
     const hasPriorConversation =
       options.prompt.filter((m) => m.role === "user" || m.role === "assistant")
         .length > 1
@@ -984,6 +1038,29 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         stream,
         request: { body: { text: "" } },
       }
+    }
+
+    // Short-circuit when opencode iterates the agent loop one more time
+    // after a turn already finished. The prompt ends with an assistant
+    // message and has no fresh user input — spawning Claude here would
+    // just produce a stub like "No input received. Standing by".
+    if (!hasNewUserContent(options.prompt)) {
+      log.info("doStream short-circuit: no new user content")
+      const stream = new ReadableStream<LanguageModelV3StreamPart>({
+        start(controller) {
+          controller.enqueue({ type: "stream-start", warnings })
+          controller.enqueue({
+            type: "finish",
+            finishReason: toFinishReason("stop"),
+            usage: toUsage({ input_tokens: 0, output_tokens: 0 }),
+            providerMetadata: {
+              "claude-code": { synthetic: true, path: "no-new-user-content" },
+            },
+          })
+          controller.close()
+        },
+      })
+      return { stream, request: { body: { text: "" } } }
     }
 
     const hasPriorConversation =

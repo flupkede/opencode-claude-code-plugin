@@ -78,6 +78,9 @@ function hasNewUserContent(
       for (const part of content as any[]) {
         if (part.type === "text" && part.text && part.text.trim()) return true
         if (part.type === "tool-result") return true
+        // Image/file-only user turns count as new input — without this the
+        // short-circuit drops them as if the turn were empty.
+        if (part.type === "image" || part.type === "file") return true
       }
     }
   }

@@ -20,7 +20,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test-bridge.ts"
+    "test": "tsx --test test-bridge.ts test-broker.ts"
   },
   "dependencies": {
     "@ai-sdk/provider": "^3.0.8",

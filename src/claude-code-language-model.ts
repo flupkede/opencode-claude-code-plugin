@@ -43,11 +43,12 @@ import {
   type ProxyToolResult,
 } from "./proxy-mcp.js"
 import {
-  getPendingProxyCall,
+  getPendingProxyCalls,
   onPendingProxyCall,
   queuePendingProxyCall,
-  resolvePendingProxyCall,
-  rejectPendingProxyCall,
+  rejectAllPendingProxyCallsForSession,
+  rejectPendingProxyCallById,
+  resolvePendingProxyCallById,
   type PendingProxyCall,
 } from "./proxy-broker.js"
 import { readFileSync, writeFileSync } from "node:fs"
@@ -1157,10 +1158,17 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     const resolvedProxy = this.resolvedProxyTools()
     const self = this
 
-    const pendingProxyCall = getPendingProxyCall(sk)
-    const pendingProxyResult = pendingProxyCall
-      ? this.extractPendingProxyResult(options.prompt, pendingProxyCall.toolCallId)
-      : null
+    const previousPendingProxyCalls = getPendingProxyCalls(sk)
+    const previousPendingProxyMatches: Array<{
+      call: PendingProxyCall
+      result: ProxyToolResult | null
+    }> = previousPendingProxyCalls.map((call) => ({
+      call,
+      result: this.extractPendingProxyResult(options.prompt, call.toolCallId),
+    }))
+    const hasMatchedPendingResults = previousPendingProxyMatches.some(
+      (m) => m.result !== null,
+    )
 
     // Pre-fetch opencode's MCP runtime status before constructing the
     // ReadableStream so the sync hot-reload check and async setup() see
@@ -1359,21 +1367,32 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
             usage?: ClaudeStreamMessage["usage"]
           } = {}
 
-        const finishWithToolCall = (call: PendingProxyCall) => {
+        // Batched drain so claude CLI's parallel tool_use blocks (e.g. two
+        // bash calls in one assistant message) end up in a single
+        // tool-calls finish event. Without this, the broker would reject
+        // every overlapping call and claude would see spurious tool errors.
+        const drainBuffer: PendingProxyCall[] = []
+        let drainTimer: ReturnType<typeof setTimeout> | null = null
+        const DRAIN_QUIET_MS = 100
+
+        const finishWithToolCalls = (calls: PendingProxyCall[]) => {
           if (controllerClosed) return
-          controller.enqueue({
-            type: "tool-input-start",
-            id: call.toolCallId,
-            toolName: call.toolName,
-          } as any)
-          controller.enqueue({
-            type: "tool-call",
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            input: JSON.stringify(call.input),
-            providerExecuted: false,
-          } as any)
-          skipResultForIds.add(call.toolCallId)
+          if (calls.length === 0) return
+          for (const call of calls) {
+            controller.enqueue({
+              type: "tool-input-start",
+              id: call.toolCallId,
+              toolName: call.toolName,
+            } as any)
+            controller.enqueue({
+              type: "tool-call",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              input: JSON.stringify(call.input),
+              providerExecuted: false,
+            } as any)
+            skipResultForIds.add(call.toolCallId)
+          }
           controller.enqueue({
             type: "finish",
             finishReason: toFinishReason("tool-calls"),
@@ -1387,6 +1406,22 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           try {
             controller.close()
           } catch {}
+        }
+
+        const drainNow = () => {
+          if (drainTimer) {
+            clearTimeout(drainTimer)
+            drainTimer = null
+          }
+          if (drainBuffer.length === 0) return
+          if (controllerClosed) return
+          const batch = drainBuffer.splice(0, drainBuffer.length)
+          log.info("draining pending proxy calls into stream finish", {
+            sessionKey: sk,
+            count: batch.length,
+            toolCallIds: batch.map((c) => c.toolCallId),
+          })
+          finishWithToolCalls(batch)
         }
 
         // Set true once we observe a `stream_event` envelope. When on, the
@@ -1934,6 +1969,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         const closeHandler = () => {
           log.debug("readline closed")
           if (controllerClosed) return
+          // Claude CLI's stdio is gone. The proxy-mcp HTTP requests that
+          // backed any pending tool calls have no one to answer them now —
+          // reject so the handlers return errors rather than hang.
+          if (drainBuffer.length > 0 || getPendingProxyCalls(sk).length > 0) {
+            rejectAllPendingProxyCallsForSession(
+              sk,
+              new Error(
+                "Claude CLI subprocess closed before pending tool calls were resolved",
+              ),
+            )
+            drainBuffer.length = 0
+          }
           controllerClosed = true
           cleanupTurn()
           endTextBlock()
@@ -1957,6 +2004,10 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           if (cleanedUp) return
           cleanedUp = true
           clearFallbackTimer()
+          if (drainTimer) {
+            clearTimeout(drainTimer)
+            drainTimer = null
+          }
           lineEmitter.off("line", lineHandler)
           lineEmitter.off("close", closeHandler)
           pendingProxyUnsubscribe?.()
@@ -1967,6 +2018,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         const procErrorHandler = (err: Error) => {
           log.error("process error", { error: err.message })
           if (controllerClosed) return
+          // Subprocess failure invalidates every pending HTTP-bound tool
+          // call for this session. Reject them so proxy-mcp returns errors
+          // to Claude rather than letting the sockets stall.
+          if (drainBuffer.length > 0 || getPendingProxyCalls(sk).length > 0) {
+            rejectAllPendingProxyCallsForSession(
+              sk,
+              new Error(
+                `Claude CLI subprocess error: ${err.message}`,
+              ),
+            )
+            drainBuffer.length = 0
+          }
           controllerClosed = true
           cleanupTurn()
           controller.enqueue({ type: "error", error: err })
@@ -1979,12 +2042,34 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         lineEmitter.on("close", closeHandler)
 
         pendingProxyUnsubscribe = onPendingProxyCall(sk, (call) => {
+          if (controllerClosed) {
+            // Stream already closed (we already drained). Late arrival —
+            // reject immediately so the proxy-mcp HTTP request returns
+            // instead of hanging until its 10-min timeout.
+            log.warn(
+              "pending proxy call arrived after stream close; rejecting",
+              {
+                sessionKey: sk,
+                toolCallId: call.toolCallId,
+                toolName: call.toolName,
+              },
+            )
+            rejectPendingProxyCallById(
+              call.toolCallId,
+              new Error(
+                `Pending proxy call '${call.toolName}' arrived after the stream was already closed`,
+              ),
+            )
+            return
+          }
           log.info("received pending proxy call for session", {
             sessionKey: sk,
             toolCallId: call.toolCallId,
             toolName: call.toolName,
           })
-          finishWithToolCall(call)
+          drainBuffer.push(call)
+          if (drainTimer) clearTimeout(drainTimer)
+          drainTimer = setTimeout(drainNow, DRAIN_QUIET_MS)
         })
 
         proc.on("error", procErrorHandler)
@@ -2016,20 +2101,54 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
           })
         }
 
-        if (pendingProxyCall && pendingProxyResult) {
-          log.info("resolving pending proxy call from tool result prompt", {
-            sessionKey: sk,
-            toolCallId: pendingProxyCall.toolCallId,
-            toolName: pendingProxyCall.toolName,
-          })
-          const resolved = resolvePendingProxyCall(sk, pendingProxyResult)
-          if (!resolved) {
-            log.warn("failed to resolve pending proxy call; no pending state", {
-              sessionKey: sk,
-              toolCallId: pendingProxyCall.toolCallId,
-            })
+        if (hasMatchedPendingResults) {
+          // Tool-result turn: the prompt carries opencode's results for the
+          // proxy tool calls we drained on the previous turn. Resolve each
+          // matched call (claude CLI's HTTP handlers wake up and continue).
+          // Any pending calls without a matching tool-result are orphans
+          // (rare protocol anomaly); reject them so claude CLI doesn't hang
+          // on those HTTP requests.
+          for (const { call, result } of previousPendingProxyMatches) {
+            if (result) {
+              log.info("resolving pending proxy call from tool result prompt", {
+                sessionKey: sk,
+                toolCallId: call.toolCallId,
+                toolName: call.toolName,
+              })
+              resolvePendingProxyCallById(call.toolCallId, result)
+            } else {
+              log.warn(
+                "pending proxy call had no matching tool-result; rejecting as orphan",
+                {
+                  sessionKey: sk,
+                  toolCallId: call.toolCallId,
+                  toolName: call.toolName,
+                },
+              )
+              rejectPendingProxyCallById(
+                call.toolCallId,
+                new Error(
+                  `Pending proxy call '${call.toolName}' (${call.toolCallId}) was not matched in tool-result turn; rejecting as orphaned`,
+                ),
+              )
+            }
           }
           return
+        }
+
+        // No pending calls had matching tool-results. If any pending calls
+        // are still hanging around from a prior turn, reject them so the
+        // HTTP handlers in proxy-mcp don't sit blocked forever while we
+        // proceed with a brand new user message.
+        if (previousPendingProxyCalls.length > 0) {
+          for (const call of previousPendingProxyCalls) {
+            rejectPendingProxyCallById(
+              call.toolCallId,
+              new Error(
+                `Pending proxy call '${call.toolName}' (${call.toolCallId}) was orphaned by a new user turn; rejecting`,
+              ),
+            )
+          }
         }
 
         // Send the user message for a fresh turn.

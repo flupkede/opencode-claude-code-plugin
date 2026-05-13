@@ -17,7 +17,13 @@ import * as os from "node:os"
 import { bridgeOpencodeMcp, __test } from "./src/mcp-bridge.js"
 import { defaultModels, toConfigModel } from "./src/models.js"
 
-const { deepMerge, mergeMcp, translateServer, detectWorktree } = __test
+const {
+  deepMerge,
+  mergeMcp,
+  translateServer,
+  substituteEnvPlaceholders,
+  detectWorktree,
+} = __test
 
 function mkTmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
@@ -142,6 +148,105 @@ test("translateServer: remote without url is skipped", () => {
 
 test("translateServer: unknown type is skipped", () => {
   assert.equal(translateServer("x", { type: "weird" } as any), null)
+})
+
+test("substituteEnvPlaceholders: replaces {env:VAR} from process.env", () => {
+  const prev = process.env.OC_TEST_ENV_SUB
+  process.env.OC_TEST_ENV_SUB = "secret-123"
+  try {
+    assert.deepEqual(
+      substituteEnvPlaceholders({ TOKEN: "{env:OC_TEST_ENV_SUB}" }),
+      { TOKEN: "secret-123" },
+    )
+  } finally {
+    if (prev === undefined) delete process.env.OC_TEST_ENV_SUB
+    else process.env.OC_TEST_ENV_SUB = prev
+  }
+})
+
+test("substituteEnvPlaceholders: missing var becomes empty string", () => {
+  delete process.env.OC_TEST_DOES_NOT_EXIST
+  assert.deepEqual(
+    substituteEnvPlaceholders({ TOKEN: "{env:OC_TEST_DOES_NOT_EXIST}" }),
+    { TOKEN: "" },
+  )
+})
+
+test("substituteEnvPlaceholders: leaves non-placeholder strings intact", () => {
+  assert.deepEqual(
+    substituteEnvPlaceholders({ A: "literal", B: "op://Private/X/y" }),
+    { A: "literal", B: "op://Private/X/y" },
+  )
+})
+
+test("substituteEnvPlaceholders: substitutes inside larger string", () => {
+  const prev = process.env.OC_TEST_PARTIAL
+  process.env.OC_TEST_PARTIAL = "abc"
+  try {
+    assert.deepEqual(
+      substituteEnvPlaceholders({ K: "prefix-{env:OC_TEST_PARTIAL}-suffix" }),
+      { K: "prefix-abc-suffix" },
+    )
+  } finally {
+    if (prev === undefined) delete process.env.OC_TEST_PARTIAL
+    else process.env.OC_TEST_PARTIAL = prev
+  }
+})
+
+test("substituteEnvPlaceholders: drops non-string values", () => {
+  const result = substituteEnvPlaceholders({
+    OK: "value",
+    N: 42 as any,
+    O: { nested: true } as any,
+  })
+  assert.deepEqual(result, { OK: "value" })
+})
+
+test("translateServer: local server env is env-substituted", () => {
+  const prev = process.env.OC_TEST_LOCAL_TOKEN
+  process.env.OC_TEST_LOCAL_TOKEN = "xoxp-real"
+  try {
+    const out = translateServer("slack", {
+      type: "local",
+      command: ["op", "run", "--", "npx", "slack-mcp-server"],
+      environment: {
+        SLACK_MCP_XOXP_TOKEN: "{env:OC_TEST_LOCAL_TOKEN}",
+        SLACK_MCP_ADD_MESSAGE_TOOL: "true",
+      },
+    } as any)
+    assert.deepEqual(out, {
+      type: "stdio",
+      command: "op",
+      args: ["run", "--", "npx", "slack-mcp-server"],
+      env: {
+        SLACK_MCP_XOXP_TOKEN: "xoxp-real",
+        SLACK_MCP_ADD_MESSAGE_TOOL: "true",
+      },
+    })
+  } finally {
+    if (prev === undefined) delete process.env.OC_TEST_LOCAL_TOKEN
+    else process.env.OC_TEST_LOCAL_TOKEN = prev
+  }
+})
+
+test("translateServer: remote server headers are env-substituted", () => {
+  const prev = process.env.OC_TEST_REMOTE_TOKEN
+  process.env.OC_TEST_REMOTE_TOKEN = "Basic xyz"
+  try {
+    const out = translateServer("furno-postgres", {
+      type: "remote",
+      url: "https://mcp.furno.app/sse",
+      headers: { Authorization: "{env:OC_TEST_REMOTE_TOKEN}" },
+    } as any)
+    assert.deepEqual(out, {
+      type: "http",
+      url: "https://mcp.furno.app/sse",
+      headers: { Authorization: "Basic xyz" },
+    })
+  } finally {
+    if (prev === undefined) delete process.env.OC_TEST_REMOTE_TOKEN
+    else process.env.OC_TEST_REMOTE_TOKEN = prev
+  }
 })
 
 test("detectWorktree: finds .git ancestor", async () => {

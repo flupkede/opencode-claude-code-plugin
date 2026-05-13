@@ -1925,6 +1925,44 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
 
               endTextBlock()
 
+              // Drain race / abandoned-call guard. If Claude CLI emitted
+              // `result` while a proxy tool call is still pending — either
+              // because the 100ms drain timer hasn't fired yet, or because
+              // Claude CLI gave up on its MCP HTTP request after an internal
+              // timeout — drain it through the normal tool-calls flow so
+              // opencode executes the tool; otherwise reject any orphan
+              // pending calls so proxy-mcp returns to the HTTP caller
+              // immediately instead of hanging until the broker's 10-minute
+              // timeout (which surfaces as a hard 2-minute "operation timed
+              // out" on the SDK side).
+              if (drainBuffer.length > 0) {
+                log.info(
+                  "draining pending proxy calls at turn-result boundary",
+                  {
+                    sessionKey: sk,
+                    count: drainBuffer.length,
+                  },
+                )
+                drainNow()
+                return
+              }
+              const orphanPending = getPendingProxyCalls(sk)
+              if (orphanPending.length > 0) {
+                log.warn(
+                  "rejecting orphan pending proxy calls at turn-result boundary",
+                  {
+                    sessionKey: sk,
+                    count: orphanPending.length,
+                  },
+                )
+                rejectAllPendingProxyCallsForSession(
+                  sk,
+                  new Error(
+                    "Claude CLI emitted result with pending proxy calls not in drain buffer",
+                  ),
+                )
+              }
+
               for (const [idx, reasoningId] of reasoningIds) {
                 if (reasoningStarted.get(idx)) {
                   controller.enqueue({

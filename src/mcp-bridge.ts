@@ -302,6 +302,34 @@ interface OpencodeRemoteServer {
 
 type OpencodeServer = OpencodeLocalServer | OpencodeRemoteServer | { enabled?: boolean }
 
+/**
+ * Substitute opencode's `{env:VAR}` interpolation in a string-keyed record
+ * using values from `process.env`. Returns a new object. If the source is
+ * not a flat string-valued record, returns it unchanged.
+ *
+ * Opencode performs this substitution itself when it spawns MCP servers
+ * directly, but the spec we read from disk still contains the literal
+ * placeholders. Without substituting them here, Claude CLI hands the
+ * literal string `{env:FOO}` to the MCP subprocess as the env value, and
+ * any server that validates credentials at startup (e.g. slack-mcp-server)
+ * crashes before exposing tools. Servers that defer validation to
+ * request time (e.g. github-mcp-server) appear to register but every API
+ * call 401s.
+ */
+function substituteEnvPlaceholders(
+  source: Record<string, unknown>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(source)) {
+    if (typeof v !== "string") continue
+    out[k] = v.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name) => {
+      const resolved = process.env[name]
+      return typeof resolved === "string" ? resolved : ""
+    })
+  }
+  return out
+}
+
 function translateServer(
   name: string,
   spec: Record<string, unknown>,
@@ -321,7 +349,9 @@ function translateServer(
     }
     if (cmd.length > 1) out.args = cmd.slice(1).map((s) => String(s))
     if (spec.environment && typeof spec.environment === "object") {
-      out.env = spec.environment
+      out.env = substituteEnvPlaceholders(
+        spec.environment as Record<string, unknown>,
+      )
     }
     return out
   }
@@ -336,7 +366,9 @@ function translateServer(
       url: spec.url,
     }
     if (spec.headers && typeof spec.headers === "object") {
-      out.headers = spec.headers
+      out.headers = substituteEnvPlaceholders(
+        spec.headers as Record<string, unknown>,
+      )
     }
     return out
   }
@@ -584,6 +616,7 @@ export const __test = {
   deepMerge,
   mergeMcp,
   translateServer,
+  substituteEnvPlaceholders,
   detectWorktree,
   loadGlobalConfig,
   loadProjectFilesInDir,

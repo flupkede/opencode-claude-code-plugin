@@ -148,19 +148,28 @@ function normalizeVisibleText(text: string): string {
 function looksLikeQuestion(text: string): boolean {
   const normalized = normalizeVisibleText(text).toLowerCase()
   if (!normalized) return false
-  if (normalized.endsWith("?")) return true
-  return /\b(please confirm|can you confirm|should i|would you like|do you want|which option|choose|pick one|need your|need you to|what would you like)\b/.test(normalized)
+  // v0.4.10 tweak 5a: '?' anywhere in the last block, not just trailing.
+  // Catches long answers that pose a question mid-text then list options
+  // and end with a period. FP risk on inline code (`result?.value`) is
+  // accepted — cost is one extra "continue" press, in the safe direction.
+  if (normalized.includes("?")) return true
+  return /\b(please confirm|can you confirm|should i|would you like|do you want|which option|choose|pick one|need your|need you to|what would you like|let me know if|let me know whether|let me know what|if you'?d like|if you want to|tell me if|tell me which|tell me whether|say (?:go|yes|no)|push back|sign off|sounds? (?:good|right)|your call|your move|up to you|ready to (?:ship|go|proceed|merge)|happy to (?:ship|go|proceed|merge))\b/.test(normalized)
 }
 
 function looksLikeBlocker(text: string): boolean {
   const normalized = normalizeVisibleText(text).toLowerCase()
   if (!normalized) return false
-  return /\b(blocked|blocker|cannot proceed|can't proceed|unable to proceed|need clarification|need more information|permission denied|failed and needs|requires your|manual step|required from you)\b/.test(normalized)
+  // v0.4.10 tweak 3: 'needs your' / 'needs you to' / 'action required'
+  // are intent-equivalent to 'requires your' but use the verb-with-s form.
+  return /\b(blocked|blocker|cannot proceed|can't proceed|unable to proceed|need clarification|need more information|permission denied|failed and needs|requires your|needs your|needs you to|action required|manual step|required from you)\b/.test(normalized)
 }
 
 function looksLikeFinalAnswer(text: string): boolean {
   const normalized = normalizeVisibleText(text).toLowerCase()
-  if (normalized.length < 40) return false
+  // v0.4.10 tweak 4: floor lowered 40 → 30 chars. Catches short clean
+  // completions like "Task is now completely done. Pushed." (36 chars)
+  // while keeping a buffer against ambiguous short narration.
+  if (normalized.length < 30) return false
   if (looksLikeQuestion(normalized) || looksLikeBlocker(normalized)) return false
   return /\b(done|completed|fixed|implemented|verified|published|released|sent|delivered|updated)\b/.test(normalized) ||
     /\b(checks?|tests?) passed\b/.test(normalized) ||

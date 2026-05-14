@@ -193,3 +193,101 @@ test("question in any earlier text block still stops continuation", () => {
   )
   assert.deepEqual(result, { continue: false, reason: "question" })
 })
+
+// ─── v0.4.10 regression tests for tweaks 2, 3, 4, 5 ────────────────────────
+
+test("v0.4.10 tweak 2: 'let me know if you'd like' stops as question", () => {
+  // Indirect offer of next steps without literal '?'. C03 in the sim corpus.
+  const result = shouldAutoContinueIncompleteTurn(
+    state(),
+    snap({
+      text:
+        "Let me know if you'd like me to proceed with the cleanup phase or stop here.",
+      hadReasoning: true,
+    }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "question" })
+})
+
+test("v0.4.10 tweak 3: 'needs your approval' stops as blocker", () => {
+  // 'needs your' is intent-equivalent to 'requires your' but slipped past
+  // the regex pre-0.4.10. D03 in the sim corpus.
+  const result = shouldAutoContinueIncompleteTurn(
+    state(),
+    snap({
+      text:
+        "Needs your approval before I push the tag — auto-push is not enabled.",
+      hadReasoning: true,
+    }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "blocker" })
+})
+
+test("v0.4.10 tweak 4: short completion (36 chars) stops as final-answer", () => {
+  // Pre-0.4.10 floor of 40 chars let "Task is now completely done. Pushed."
+  // through as non-final-progress. Floor lowered to 30. I01 in the sim corpus.
+  const result = shouldAutoContinueIncompleteTurn(
+    state(),
+    snap({
+      text: "Task is now completely done. Pushed.",
+      hadToolActivity: true,
+    }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "final-answer" })
+})
+
+test("v0.4.10 tweak 5a: '?' anywhere in last block stops as question", () => {
+  // Real fire shape from 2026-05-14T03:31 — long answer that asks a
+  // question early then lists options and ends in a period.
+  const result = shouldAutoContinueIncompleteTurn(
+    state(),
+    snap({
+      text:
+        "Here's the plan. Want me to proceed with that? Concretely: 1. Do X. 2. Do Y. 3. Do Z. Say 'go' or push back on any step.",
+      hadReasoning: true,
+    }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "question" })
+})
+
+test("v0.4.10 tweak 5b: 'say go or push back' (no '?') stops as question", () => {
+  // Pure soft-proceed phrasing with no '?' anywhere. Tests that the
+  // phrase-based half of tweak 5 fires independently of the '?' check.
+  const result = shouldAutoContinueIncompleteTurn(
+    state(),
+    snap({
+      text:
+        "Pick the option you want. Say 'go' to ship as planned, or push back on any specific step.",
+      hadReasoning: true,
+    }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "question" })
+})
+
+test("v0.4.10 tweak 5c: 'if you want to' stops as question", () => {
+  // Reconstruction of 02:48:11-style fire — long analysis ending in a
+  // conditional action offer with no '?'.
+  const result = shouldAutoContinueIncompleteTurn(
+    state(),
+    snap({
+      text:
+        "Three options are on the table. The recommendation is to leave DEBUG off. Consider option C if you want to re-enable DEBUG without UI noise.",
+      hadReasoning: true, hadToolActivity: true,
+    }),
+  )
+  assert.deepEqual(result, { continue: false, reason: "question" })
+})
+
+test("v0.4.10 tweak 5d: A-class continues unaffected (no '?' or soft-proceed phrase)", () => {
+  // Sanity check: mid-task narration without question signals should still
+  // continue. Catches regressions where '?' or phrase regex accidentally
+  // expands.
+  const result = shouldAutoContinueIncompleteTurn(
+    state(),
+    snap({
+      text: "Now I'll read the file. Then I'll diff against previous. Then summarize.",
+      hadReasoning: true,
+    }),
+  )
+  assert.deepEqual(result, { continue: true, reason: "non-final-progress" })
+})

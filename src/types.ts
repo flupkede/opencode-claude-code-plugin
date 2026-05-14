@@ -1,3 +1,7 @@
+import type { LogLevel, LogMode } from "./logger"
+
+export type { LogLevel, LogMode }
+
 export interface ClaudeCodeConfig {
   provider: string
   cliPath: string
@@ -50,9 +54,6 @@ export interface LoggingConfig {
    */
   level?: LogLevel
 }
-
-export type LogLevel = "debug" | "info" | "notice" | "warn" | "error"
-export type LogMode = "silent" | "debug"
 
 export type WebSearchRouting = "claude" | "disabled" | (string & {})
 

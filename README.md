@@ -321,11 +321,28 @@ Set `permissionMode: "plan"` to forward `--permission-mode plan` to Claude. The 
 
 ## Debug logging
 
+Two independent knobs:
+
 ```bash
+# Verbose logging to stderr (opencode surfaces stderr as UI warnings):
 DEBUG=opencode-claude-code opencode
+
+# Persistent file log (default: OFF — file is not created at all):
+OPENCODE_CLAUDE_CODE_LOG_FILE=1 opencode
+
+# Both:
+DEBUG=opencode-claude-code OPENCODE_CLAUDE_CODE_LOG_FILE=1 opencode
 ```
 
-Goes to stderr.
+When `OPENCODE_CLAUDE_CODE_LOG_FILE` is set to any truthy value (`1`,
+`true`, `yes`, `on`), the plugin writes NOTICE/WARN/ERROR (plus INFO and
+DEBUG when `DEBUG=opencode-claude-code` is also set) to
+`~/.local/share/opencode-claude-code/plugin.log` with 5MB rotation. Override
+the directory with `OPENCODE_CLAUDE_CODE_LOG_DIR=/custom/path`.
+
+Default is off so the plugin doesn't accrete a log file on every user's
+disk. Opt in when you need to inspect auto-continue decisions, broker
+state, or other plugin internals.
 
 ## Known limitations
 

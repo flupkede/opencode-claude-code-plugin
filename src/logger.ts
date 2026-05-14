@@ -10,6 +10,21 @@ const LOG_DIR =
 const LOG_FILE = join(LOG_DIR, "plugin.log")
 const MAX_LOG_BYTES = 5 * 1024 * 1024 // 5 MB
 
+// v0.4.14: File logging is opt-in via OPENCODE_CLAUDE_CODE_LOG_FILE.
+// Before this, every user of the plugin had ~/.local/share/opencode-claude-
+// code/plugin.log silently accreting on their disk with full message
+// contents — a privacy and disk-hygiene mistake. Default is now NO file
+// logging. Developers opt in with any truthy value; UI behavior is
+// unaffected (controlled by DEBUG=opencode-claude-code separately).
+function isTruthyEnv(v: string | undefined): boolean {
+  if (v == null) return false
+  const s = v.toLowerCase().trim()
+  if (s === "") return false
+  return s !== "0" && s !== "false" && s !== "no" && s !== "off"
+}
+
+const LOG_FILE_ENABLED = isTruthyEnv(process.env.OPENCODE_CLAUDE_CODE_LOG_FILE)
+
 let fileLoggingDisabled = false
 
 function rotateIfNeeded(): void {
@@ -24,6 +39,7 @@ function rotateIfNeeded(): void {
 }
 
 function writeToFile(line: string): void {
+  if (!LOG_FILE_ENABLED) return
   if (fileLoggingDisabled) return
   try {
     mkdirSync(dirname(LOG_FILE), { recursive: true })

@@ -38,6 +38,7 @@
 - `signature_delta` is expected encrypted thinking metadata. Ignore it quietly; do not treat it as an error.
 - Claude CLI emits internal tools (`Agent`, `ToolSearch`, `AskFollowupQuestion`, `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`, `TaskStop`) that have no opencode registry entry. They live in `CLAUDE_INTERNAL_TOOLS` in `src/tool-mapping.ts` and must be skipped, not forwarded. Forwarding them surfaces `⚙ invalid` tool rows in opencode. `TaskOutput` is the exception: it stays mapped to a `bash echo` so the result is visible.
 - Verified compatible with opencode v1.15.0 (audit 2026-05-16). `ProviderV2` hook gained an optional `ctx` arg we ignore; `McpStatus` expanded to 5 variants but `enabled: status === "connected"` in `mcp-bridge.ts` still collapses non-connected to `false` correctly. opencode's `tools` argument to `doStream` is intentionally unused — Claude CLI only sees its own built-ins plus MCP servers bridged via `--mcp-config`, so opencode-native tools like `task_status` never reach the model and need no `mapTool` entry. Re-audit at the next opencode minor bump.
+- `cwd` resolution at spawn must stay lazy. `opencodeProjectDirectory` captured from `PluginInput.directory` lives in `runtime-status.ts` and is consumed via `resolveSpawnCwd()` at spawn time only as a fallback when `process.cwd()` is unusable (`/`). Do NOT bake the captured value into `mergedOptions.cwd` during provider registration in `index.ts` — that freezes it at plugin init and breaks workspace switching mid-session. The v0.2.4 fix did exactly this and it shipped as the v0.4.21 regression report on issue #4. Tests live in `test-cwd-resolution.ts`.
 
 ## Tests To Touch When Editing
 
@@ -47,6 +48,7 @@
 - MCP bridge/proxy behavior: `test-bridge.ts`, `test-broker.ts`.
 - Auto-continue / incomplete turn handling: `test-auto-continue.ts`, `test-has-new-user-content.ts`.
 - Logger/env behavior: `test-logger.ts`.
+- Spawn-time cwd resolution (`resolveSpawnCwd`, captured-directory fallback): `test-cwd-resolution.ts`.
 
 ## Known Follow-ups
 

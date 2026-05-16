@@ -2,10 +2,11 @@ import type { RuntimeMcpStatus } from "./mcp-bridge.js"
 import { log } from "./logger.js"
 
 /**
- * Captured opencode SDK client from `PluginInput`. Lives in its own module
- * to break the cycle that would otherwise form between `index.ts` and
- * `claude-code-language-model.ts`. `null` until the plugin's `server`
- * factory runs (e.g. early provider lookups, direct AI-SDK use, tests).
+ * Captured opencode runtime context (SDK client + project directory) from
+ * `PluginInput`. Lives in its own module to break the cycle that would
+ * otherwise form between `index.ts` and `claude-code-language-model.ts`.
+ * Values are `null`/`undefined` until the plugin's `server` factory runs
+ * (e.g. early provider lookups, direct AI-SDK use, tests).
  */
 type OpencodeClient = {
   mcp?: {
@@ -24,6 +25,63 @@ export function setOpencodeClient(client: unknown): void {
   if (client && typeof client === "object") {
     opencodeClient = client as OpencodeClient
   }
+}
+
+/**
+ * Captured opencode project directory from `PluginInput.directory` (with
+ * `worktree` as secondary signal). Used as a *fallback* at Claude CLI
+ * spawn time only when `process.cwd()` is unusable (macOS GUI launches
+ * where launchd hands the process `cwd=/`).
+ *
+ * IMPORTANT: never bake this into provider config (`mergedOptions.cwd`).
+ * Doing so freezes the value at plugin init and breaks workspace
+ * switching mid-session, because subsequent workspace changes in
+ * opencode's UI never get reflected in `this.config.cwd`. See issue #4.
+ */
+let opencodeProjectDirectory: string | undefined
+
+export function setOpencodeProjectDirectory(dir: string | undefined): void {
+  opencodeProjectDirectory = dir
+}
+
+export function getOpencodeProjectDirectory(): string | undefined {
+  return opencodeProjectDirectory
+}
+
+export function isUsableDirectory(d: unknown): d is string {
+  return typeof d === "string" && d.length > 1 && d !== "/"
+}
+
+/**
+ * Resolve the cwd for a Claude CLI subprocess spawn. Priority:
+ *
+ * 1. Explicit `configured` value (`options.cwd` from `opencode.json`).
+ *    Users who pinned a directory keep their override unconditionally.
+ * 2. Live `process.cwd()` when it's a real directory. Restores the lazy
+ *    resolution that lets opencode's project-aware behavior (chdir on
+ *    workspace switch, project-per-shell on terminal launch) flow
+ *    through without restarting the plugin.
+ * 3. Captured project directory from plugin init. Rescues macOS GUI
+ *    launches where `process.cwd()` is `/`.
+ * 4. Final fallback to `process.cwd()` (returns `/` in the pathological
+ *    case where neither override nor capture is available).
+ */
+export function resolveSpawnCwd(configured: string | undefined): string {
+  return resolveSpawnCwdFrom(
+    configured,
+    process.cwd(),
+    opencodeProjectDirectory,
+  )
+}
+
+export function resolveSpawnCwdFrom(
+  configured: string | undefined,
+  live: string,
+  captured: string | undefined,
+): string {
+  if (configured) return configured
+  if (isUsableDirectory(live)) return live
+  return captured ?? live
 }
 
 /**

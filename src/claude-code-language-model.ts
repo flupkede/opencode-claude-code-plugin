@@ -20,6 +20,7 @@ import { bridgeOpencodeMcp, type RuntimeMcpStatus } from "./mcp-bridge.js"
 import {
   getRuntimeMcpStatus,
   fetchOpencodeToolList,
+  resolveSpawnCwd,
 } from "./runtime-status.js"
 import {
   getActiveProcess,
@@ -960,7 +961,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
     const warnings: SharedV3Warning[] = []
-    const cwd = this.config.cwd ?? process.cwd()
+    const cwd = resolveSpawnCwd(this.config.cwd)
     const scope = this.requestScope(options as any)
     const affinity = this.sessionAffinity(options)
     const sk = sessionKey(cwd, `${this.modelId}::${scope}::${affinity}`)
@@ -1387,7 +1388,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<Awaited<ReturnType<LanguageModelV3["doStream"]>>> {
     const warnings: SharedV3Warning[] = []
-    const cwd = this.config.cwd ?? process.cwd()
+    const cwd = resolveSpawnCwd(this.config.cwd)
     const cliPath = this.config.cliPath
     const skipPermissions = this.config.skipPermissions !== false
     const scope = this.requestScope(options as any)

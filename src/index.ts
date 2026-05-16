@@ -13,7 +13,11 @@ import {
 } from "./accounts.js"
 import { cleanupStaleUnscopedInstall } from "./cleanup-stale.js"
 import { configureLogger, log } from "./logger.js"
-import { setOpencodeClient } from "./runtime-status.js"
+import {
+  isUsableDirectory,
+  setOpencodeClient,
+  setOpencodeProjectDirectory,
+} from "./runtime-status.js"
 
 export interface ClaudeCodeProvider {
   specificationVersion: "v3"
@@ -21,17 +25,10 @@ export interface ClaudeCodeProvider {
   languageModel(modelId: string): LanguageModelV3
 }
 
-// Resolved at plugin init from opencode's plugin context (`directory` /
-// `worktree`). Used as the default `cwd` for spawned Claude CLI subprocesses
-// when the user hasn't set one explicitly in opencode.json. Fixes the
-// GUI-launch case on macOS where launchd hands the parent process `cwd=/`
-// and `process.cwd()` would propagate that to the CLI. See issue #4.
-let opencodeProjectDirectory: string | undefined
-
-function isUsableDirectory(d: unknown): d is string {
-  return typeof d === "string" && d.length > 1 && d !== "/"
-}
-
+// Picks the best directory from opencode's plugin context (`directory` /
+// `worktree`). Result is handed to runtime-status so it's available as a
+// *fallback* at spawn time only when `process.cwd()` is unusable (macOS
+// GUI launches at `/`). Never baked into provider config — see #4.
 function pickOpencodeDirectory(input: unknown): string | undefined {
   if (!input || typeof input !== "object") return undefined
   const ctx = input as { directory?: unknown; worktree?: unknown }
@@ -227,7 +224,6 @@ async function providerConfig(
   const mergedOptions: Record<string, unknown> = {
     cliPath: "claude",
     proxyTools: ["Bash", "Edit", "Write", "WebFetch"],
-    ...(opencodeProjectDirectory ? { cwd: opencodeProjectDirectory } : {}),
     ...optionDefaults,
     ...cleanProviderOptions(existing?.options),
     providerID,
@@ -323,10 +319,12 @@ const server: OpenCodePlugin = async (input) => {
     setOpencodeClient((input as { client?: unknown }).client)
   }
 
-  // Capture opencode's project-aware cwd so the Claude CLI subprocess inherits
-  // the right directory even when opencode is launched from a macOS GUI shell
-  // (Dock/Finder/Spotlight), where `process.cwd()` is `/`.
-  opencodeProjectDirectory = pickOpencodeDirectory(input)
+  // Capture opencode's project-aware directory as a *fallback* used at
+  // Claude CLI spawn time only when `process.cwd()` is unusable. Rescues
+  // macOS GUI launches at `/` without freezing the value into provider
+  // config, so opencode workspace switches mid-session still take effect.
+  // See `resolveSpawnCwd` in runtime-status.ts and issue #4.
+  setOpencodeProjectDirectory(pickOpencodeDirectory(input))
 
   return {
     config: async (config) => {

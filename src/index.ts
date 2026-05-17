@@ -386,8 +386,18 @@ const server: OpenCodePlugin = async (input) => {
       // providerID — otherwise the model sees providerOptions[id][id].opencodeAgent.
       output.options ??= {}
       ;(output.options as Record<string, unknown>).opencodeAgent = input.agent
+      // Inject session ID as fallback for session isolation.
+      // When x-session-affinity header is absent (provider switch mid-session,
+      // title synthesis paths, older opencode), this ensures each opencode
+      // session still gets a unique Claude CLI process via a separate session
+      // key. resolveSessionAffinity() in claude-code-language-model.ts reads
+      // this from providerOptions[providerID].opencodeSessionID.
+      if (typeof input.sessionID === "string" && input.sessionID.length > 0) {
+        ;(output.options as Record<string, unknown>).opencodeSessionID = input.sessionID
+      }
       log.debug("chat.params tagged providerOptions", {
         agent: input.agent,
+        sessionID: input.sessionID,
         providerID,
       })
     },

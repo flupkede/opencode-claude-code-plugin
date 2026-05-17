@@ -90,6 +90,13 @@ export type OpenCodeEvent = {
  * for the current call ("default", "compaction", "title", etc.), the
  * resolved model, and the user message. Output is the mutable params bag
  * the hook can adjust before opencode forwards them to the LM.
+ *
+ * The plugin injects `input.agent` as `opencodeAgent` and `input.sessionID`
+ * as `opencodeSessionID` into `output.options` so the language model can
+ * read them from `providerOptions[providerID]` on every LLM request.
+ * `opencodeSessionID` serves as a fallback affinity token when the
+ * `x-session-affinity` request header is absent (provider switch mid-session,
+ * title synthesis paths, older opencode versions).
  */
 export type OpenCodeChatParamsInput = {
   sessionID?: string

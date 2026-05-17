@@ -59,6 +59,9 @@ import {
 import {
   storeCompressionSummary,
   getCompressionSummary,
+  markRestartPending,
+  isRestartPending,
+  clearRestartPending,
 } from "./compression-store.js"
 import { readFileSync, writeFileSync } from "node:fs"
 import { unlink } from "node:fs/promises"
@@ -426,12 +429,17 @@ mark meaningful checkpoints, not every completed substep.`
  * registered in the Claude CLI environment. This note prevents Claude
  * from wasting thinking cycles searching for unavailable tools.
  */
-const CLAUDE_CLI_CONTEXT_NOTE = `## Context Management Note
+const CLAUDE_CLI_CONTEXT_NOTE = `## Context Management
 
 You are running inside Claude Code CLI via the opencode-claude-code-plugin.
-The \`compress\` tool IS available — call it with a \`summary\` parameter containing a dense technical summary of older conversation content you want to replace.
-The tools \`distill\` and \`prune\` are NOT available. Use \`compress\` only.
-Opencode's auto-compaction handles session-level compression automatically.`
+
+**Available:** The \`compress\` tool IS available and FULLY functional.
+- Call it with a \`summary\` parameter containing a dense technical summary of resolved work.
+- Effect: On your next message, Claude Code CLI will restart with a fresh context window. Only your summary will carry forward as prior context.
+- Use it when context is getting large and older resolved work no longer needs detail.
+
+**Not available:** \`distill\`, \`prune\` — these are opencode-native tools not available in this context.
+**Auto-compaction:** opencode handles full session compaction automatically at context limits.`
 
 
 
@@ -691,11 +699,12 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       const summary =
         typeof args.summary === "string" ? args.summary : JSON.stringify(args)
       storeCompressionSummary(sessionKeyForCalls, summary)
-      log.info("compress interceptor stored summary", {
+      markRestartPending(sessionKeyForCalls)
+      log.info("compress interceptor stored summary and marked restart pending", {
         sessionKey: sessionKeyForCalls,
         summaryLength: summary.length,
       })
-      return "Compression summary stored. Context crystallized — older conversation detail replaced by this summary."
+      return "Context compressed. Your summary has been saved. The next message will start from a fresh Claude Code session with only your summary as prior context — full context reduction applied."
     })
     const srv = await createProxyMcpServer({ tools, interceptors })
     srv.calls.on("call", (call: ProxyToolCall) => {
@@ -1685,6 +1694,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
         if (compactionMode) {
           deleteActiveProcess(sk)
           deleteClaudeSessionId(sk)
+        }
+
+        // If compress was called in the previous turn, reset the session so
+        // the next spawn is fresh. The compression summary is retained in
+        // compression-store and will be prepended to the new system prompt by
+        // buildAppendedSystemPrompt, giving Claude a clean context window with
+        // only the summary as prior context.
+        if (isRestartPending(sk)) {
+          clearRestartPending(sk)
+          deleteActiveProcess(sk)
+          deleteClaudeSessionId(sk)
+          log.info("compress restart: evicted active process and session id", { sk })
         }
 
         let activeProcess = getActiveProcess(sk)

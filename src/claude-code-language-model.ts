@@ -398,6 +398,12 @@ function nearestWorkspaceAgentsPrompt(cwd: string): string | undefined {
   }
 }
 
+const AGENTS_MAINTENANCE_HINT = `## Keeping AGENTS.md up to date
+
+When you complete a task, phase, or to-do item that is listed in AGENTS.md, update the file
+immediately after the work is done — mark it ✅, check it off, or remove it. Do this inside
+the same turn so the next session does not repeat work that is already finished.`
+
 const MULTI_STEP_TASK_HINT = `## Continuing through multi-step tasks
 
 opencode requires the user to press "continue" after each turn ends. When a
@@ -419,6 +425,7 @@ function buildAppendedSystemPrompt(
 
   if (globalAgents) parts.push(globalAgents)
   if (workspaceAgents && workspaceAgents !== globalAgents) parts.push(workspaceAgents)
+  if (globalAgents || workspaceAgents) parts.push(AGENTS_MAINTENANCE_HINT)
   if (includeMultiStepHint) parts.push(MULTI_STEP_TASK_HINT)
 
   const content = parts.join("\n\n")

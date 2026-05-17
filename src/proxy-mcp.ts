@@ -49,6 +49,13 @@ export type ProxyToolResult =
   | { kind: "text"; text: string; isError?: boolean }
   | { kind: "error"; message: string }
 
+export interface ProxyMcpServerOptions {
+  tools?: ProxyToolDef[]
+  /** Tool name → handler. Intercepted calls are resolved immediately in-process
+   *  and are never forwarded to the broker / opencode. */
+  interceptors?: Map<string, (args: Record<string, unknown>) => Promise<string>>
+}
+
 const PROTOCOL_VERSION = "2024-11-05"
 const SERVER_NAME = "opencode_proxy"
 export const PROXY_TOOL_PREFIX = `mcp__${SERVER_NAME}__`
@@ -198,11 +205,43 @@ export const DEFAULT_PROXY_TOOLS: ProxyToolDef[] = [
       required: ["description", "prompt", "subagent_type"],
     },
   },
+  {
+    name: "compress",
+    description:
+      "Compress and summarize older conversation content. Call this when" +
+      " context is getting large. Write a dense technical summary of the" +
+      " resolved work and pass it as the `summary` argument. The summary" +
+      " becomes the authoritative record going forward — it will be" +
+      " prepended to the system prompt on the next turn.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description:
+            "Dense technical summary of the conversation content being" +
+            " compressed. This becomes the authoritative record going forward.",
+        },
+      },
+      required: ["summary"],
+    },
+  },
 ]
 
 export async function createProxyMcpServer(
-  tools: ProxyToolDef[] = DEFAULT_PROXY_TOOLS,
+  toolsOrOptions: ProxyToolDef[] | ProxyMcpServerOptions = DEFAULT_PROXY_TOOLS,
 ): Promise<ProxyMcpServer> {
+  // Normalise the overloaded first argument.
+  let tools: ProxyToolDef[]
+  let options: ProxyMcpServerOptions
+  if (Array.isArray(toolsOrOptions)) {
+    tools = toolsOrOptions
+    options = { tools }
+  } else {
+    options = toolsOrOptions
+    tools = options.tools ?? DEFAULT_PROXY_TOOLS
+  }
+
   const calls = new EventEmitter()
   const pending = new Map<string, ProxyToolCall>()
 
@@ -286,6 +325,31 @@ export async function createProxyMcpServer(
               message: `Unknown proxy tool: ${toolName}`,
             },
           })
+          return
+        }
+
+        // Intercepted tools are resolved immediately in-process — never
+        // forwarded to the broker or opencode.
+        if (options.interceptors?.has(toolName)) {
+          const handler = options.interceptors.get(toolName)!
+          try {
+            const text = await handler(input)
+            writeJson(res, {
+              jsonrpc: "2.0",
+              id: request.id ?? null,
+              result: { content: [{ type: "text", text }] },
+            })
+          } catch (interceptorErr) {
+            const msg =
+              interceptorErr instanceof Error
+                ? interceptorErr.message
+                : String(interceptorErr)
+            writeJson(res, {
+              jsonrpc: "2.0",
+              id: request.id ?? null,
+              error: { code: -32000, message: msg },
+            })
+          }
           return
         }
 

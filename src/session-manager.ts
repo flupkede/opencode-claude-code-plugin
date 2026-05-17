@@ -5,6 +5,7 @@ import { unlink } from "node:fs/promises"
 import { log } from "./logger.js"
 import type { ProxyMcpServer } from "./proxy-mcp.js"
 import { clearLedger } from "./todo-ledger.js"
+import { clearCompressionSummary } from "./compression-store.js"
 import {
   cliSupportsThinking,
   cliSupportsThinkingDisplay,
@@ -118,6 +119,7 @@ export function setClaudeSessionId(key: string, sessionId: string): void {
 export function deleteClaudeSessionId(key: string): void {
   const claudeSessionId = claudeSessions.get(key)
   if (claudeSessionId) clearLedger(claudeSessionId)
+  clearCompressionSummary(key)
   claudeSessions.delete(key)
 }
 

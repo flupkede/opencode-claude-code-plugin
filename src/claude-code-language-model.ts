@@ -56,6 +56,10 @@ import {
   resolvePendingProxyCallById,
   type PendingProxyCall,
 } from "./proxy-broker.js"
+import {
+  storeCompressionSummary,
+  getCompressionSummary,
+} from "./compression-store.js"
 import { readFileSync, writeFileSync } from "node:fs"
 import { unlink } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
@@ -422,15 +426,14 @@ mark meaningful checkpoints, not every completed substep.`
  * registered in the Claude CLI environment. This note prevents Claude
  * from wasting thinking cycles searching for unavailable tools.
  */
-const CLAUDE_CLI_CONTEXT_NOTE = `## Runtime environment: Claude Code CLI
+const CLAUDE_CLI_CONTEXT_NOTE = `## Context Management Note
 
-You are running via the Claude Code CLI (not a direct API call). This affects context management:
+You are running inside Claude Code CLI via the opencode-claude-code-plugin.
+The \`compress\` tool IS available — call it with a \`summary\` parameter containing a dense technical summary of older conversation content you want to replace.
+The tools \`distill\` and \`prune\` are NOT available. Use \`compress\` only.
+Opencode's auto-compaction handles session-level compression automatically.`
 
-- The \`compress\` tool is NOT available. Do not attempt to call it.
-- The \`distill\`, \`prune\`, and \`extract\` tools are NOT available.
-- Context window management is handled automatically by Claude CLI's own session history.
-- Ignore any system instructions that tell you to call \`compress\` — they are intended for direct API providers, not this environment.
-- DCP context injections (AGENTS.md, dynamic state) arrive via the system prompt and are already applied.`
+
 
 /**
  * Extract text content from all `system`-role messages in the prompt.
@@ -465,11 +468,20 @@ function buildAppendedSystemPrompt(
   cwd: string,
   includeMultiStepHint = true,
   extraSystemContent: string[] = [],
+  sessionKeyForCompression?: string,
 ): string | undefined {
   const parts: string[] = []
-  // Always prepend the CLI runtime note so Claude knows compress/distill/prune
-  // are unavailable. This prevents wasted thinking cycles when DCP's context
-  // management system reminders are forwarded via extraSystemContent.
+  // Prepend any stored compression summary so it appears before all other
+  // content and serves as the authoritative record for the next spawn.
+  if (sessionKeyForCompression) {
+    const compressionSummary = getCompressionSummary(sessionKeyForCompression)
+    if (compressionSummary) {
+      parts.push(`## Compression Summary (from previous context compression)\n\n${compressionSummary}`)
+    }
+  }
+  // Always prepend the CLI runtime note so Claude knows compress availability.
+  // This prevents wasted thinking cycles when DCP's context management system
+  // reminders are forwarded via extraSystemContent.
   parts.push(CLAUDE_CLI_CONTEXT_NOTE)
   // Inject extra system content (DCP injections, provider context, etc.)
   // so workspace AGENTS.md instructions that follow take precedence.
@@ -674,7 +686,18 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
     tools: ProxyToolDef[],
     sessionKeyForCalls: string,
   ): Promise<ProxyMcpServer> {
-    const srv = await createProxyMcpServer(tools)
+    const interceptors = new Map<string, (args: Record<string, unknown>) => Promise<string>>()
+    interceptors.set("compress", async (args) => {
+      const summary =
+        typeof args.summary === "string" ? args.summary : JSON.stringify(args)
+      storeCompressionSummary(sessionKeyForCalls, summary)
+      log.info("compress interceptor stored summary", {
+        sessionKey: sessionKeyForCalls,
+        summaryLength: summary.length,
+      })
+      return "Compression summary stored. Context crystallized — older conversation detail replaced by this summary."
+    })
+    const srv = await createProxyMcpServer({ tools, interceptors })
     srv.calls.on("call", (call: ProxyToolCall) => {
       queuePendingProxyCall(sessionKeyForCalls, call)
     })
@@ -1185,6 +1208,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
       cwd,
       this.config.multiStepContinuation !== false,
       extractSystemMessages(options.prompt),
+      sk,
     )
     const cliArgs = buildCliArgs({
       sessionKey: sk,
@@ -1761,6 +1785,7 @@ export class ClaudeCodeLanguageModel implements LanguageModelV3 {
                   cwd,
                   self.config.multiStepContinuation !== false,
                   extractSystemMessages(options.prompt),
+                  sk,
                 )
             cliArgs = buildCliArgs({
               sessionKey: sk,

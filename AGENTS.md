@@ -5,6 +5,7 @@
 - This is an npm package that exposes an opencode provider by wrapping the Claude Code CLI (`claude`), not the Anthropic HTTP API directly.
 - Package entrypoint is `src/index.ts`; runtime provider behavior lives mostly in `src/claude-code-language-model.ts`.
 - `src/message-builder.ts` owns AI-SDK prompt → Claude CLI stream-json message conversion, including `/compact` transcript rendering.
+- `system`-role messages from `options.prompt` are extracted by `extractSystemMessages()` in `src/claude-code-language-model.ts` and forwarded to `buildAppendedSystemPrompt` so plugins like `opencode-dcp` that inject context (AGENTS.md, dynamic state) via system-role messages reach Claude CLI via `--append-system-prompt-file`.
 - `src/session-manager.ts` owns Claude CLI process reuse, session ids, LRU eviction, and CLI arg construction.
 - `src/cli-version.ts` gates optional CLI flags. Do not pass newly-added Claude CLI flags unconditionally.
 - Build output is `dist/`, is gitignored, and is rebuilt by CI. Do not commit `dist/`.

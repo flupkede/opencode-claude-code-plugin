@@ -414,6 +414,25 @@ blocker. The user can interrupt or abort at any time; turn endings should
 mark meaningful checkpoints, not every completed substep.`
 
 /**
+ * Injected at the top of the appended system prompt so Claude knows
+ * which context-management tools are and aren't available when running
+ * via Claude Code CLI (as opposed to a direct API provider).
+ * DCP injects compress/distill/prune instructions via system.transform;
+ * those are forwarded here unchanged, but the tools themselves are not
+ * registered in the Claude CLI environment. This note prevents Claude
+ * from wasting thinking cycles searching for unavailable tools.
+ */
+const CLAUDE_CLI_CONTEXT_NOTE = `## Runtime environment: Claude Code CLI
+
+You are running via the Claude Code CLI (not a direct API call). This affects context management:
+
+- The \`compress\` tool is NOT available. Do not attempt to call it.
+- The \`distill\`, \`prune\`, and \`extract\` tools are NOT available.
+- Context window management is handled automatically by Claude CLI's own session history.
+- Ignore any system instructions that tell you to call \`compress\` — they are intended for direct API providers, not this environment.
+- DCP context injections (AGENTS.md, dynamic state) arrive via the system prompt and are already applied.`
+
+/**
  * Extract text content from all `system`-role messages in the prompt.
  * Standard API providers forward these as the `system` parameter; for
  * Claude CLI, the only equivalent path is --append-system-prompt-file.
@@ -448,7 +467,11 @@ function buildAppendedSystemPrompt(
   extraSystemContent: string[] = [],
 ): string | undefined {
   const parts: string[] = []
-  // Inject extra system content first (DCP injections, provider context, etc.)
+  // Always prepend the CLI runtime note so Claude knows compress/distill/prune
+  // are unavailable. This prevents wasted thinking cycles when DCP's context
+  // management system reminders are forwarded via extraSystemContent.
+  parts.push(CLAUDE_CLI_CONTEXT_NOTE)
+  // Inject extra system content (DCP injections, provider context, etc.)
   // so workspace AGENTS.md instructions that follow take precedence.
   for (const s of extraSystemContent) {
     if (s.trim()) parts.push(s.trim())
